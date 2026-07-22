@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: notification
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+        - name: notification-service
+          image: notification-service:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 3006
+          env:
+            - name: PORT
+              value: "3006"
+            - name: KAFKA_GROUP_ID
+              value: notification-service-group
+            # Direct infra URL — avoids cross-namespace ConfigMap dependency
+            - name: KAFKA_BROKER
+              value: kafka.infra.svc.cluster.local:9092
+            - name: KAFKAJS_NO_PARTITIONER_WARNING
+              value: "1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3006
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3006
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: notification
+spec:
+  clusterIP: None
+  selector:
+    app: notification-service
+  ports:
+    - port: 3006
+      targetPort: 3006
