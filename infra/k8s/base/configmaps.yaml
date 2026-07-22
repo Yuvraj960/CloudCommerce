@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: global
+  namespace: default
+data:
+  KAFKA_BROKER: "kafka.infra.svc.cluster.local:9092"
+  LOCALSTACK_ENDPOINT: "http://localstack.infra.svc.cluster.local:4566"
+  AWS_ACCESS_KEY_ID: "test"
+  AWS_SECRET_ACCESS_KEY: "test"
+  S3_BUCKET: "cloudcommerce-images"
+  REDIS_URL: "redis://redis.infra.svc.cluster.local:6379"
+  KAFKAJS_NO_PARTITIONER_WARNING: "1"
