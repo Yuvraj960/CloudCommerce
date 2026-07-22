@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-service
+  namespace: product
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: product-service
+  template:
+    metadata:
+      labels:
+        app: product-service
+    spec:
+      initContainers:
+        - name: create-s3-bucket
+          image: curlimages/curl:latest
+          command:
+            - sh
+            - -c
+            - |
+              echo "Creating S3 bucket..."
+              curl -s -X PUT "http://localstack.infra.svc.cluster.local:4566/cloudcommerce-images" || true
+      containers:
+        - name: product-service
+          image: product-service:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 3002
+          env:
+            - name: SERVICE_NAME
+              value: product-service
+            - name: NODE_ENV
+              value: production
+            - name: LOG_LEVEL
+              value: info
+            - name: PORT
+              value: "3002"
+            # Direct infra URLs — avoids cross-namespace ConfigMap dependency
+            - name: MONGODB_URI
+              value: mongodb://mongo.infra.svc.cluster.local:27017/cloudcommerce
+            - name: LOCALSTACK_ENDPOINT
+              value: http://localstack.infra.svc.cluster.local:4566
+            - name: AWS_ACCESS_KEY_ID
+              value: test
+            - name: AWS_SECRET_ACCESS_KEY
+              value: test
+            - name: S3_BUCKET
+              value: cloudcommerce-images
+            - name: KAFKA_BROKER
+              value: kafka.infra.svc.cluster.local:9092
+            - name: KAFKAJS_NO_PARTITIONER_WARNING
+              value: "1"
+          envFrom:
+            - secretRef:
+                name: product-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-service
+  namespace: product
+spec:
+  clusterIP: None
+  selector:
+    app: product-service
+  ports:
+    - port: 3002
+      targetPort: 3002

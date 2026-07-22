@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: payment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+    spec:
+      containers:
+        - name: payment-service
+          image: payment-service:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 3005
+          env:
+            - name: KAFKA_GROUP_ID
+              value: payment-service-group
+            - name: KAFKAJS_NO_PARTITIONER_WARNING
+              value: "1"
+            # Direct infra URL — avoids cross-namespace ConfigMap dependency
+            - name: KAFKA_BROKER
+              value: kafka.infra.svc.cluster.local:9092
+          envFrom:
+            - secretRef:
+                name: payment-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3005
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3005
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: payment
+spec:
+  clusterIP: None
+  selector:
+    app: payment-service
+  ports:
+    - port: 3005
+      targetPort: 3005

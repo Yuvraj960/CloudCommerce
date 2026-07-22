@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cart-service
+  namespace: cart
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cart-service
+  template:
+    metadata:
+      labels:
+        app: cart-service
+    spec:
+      containers:
+        - name: cart-service
+          image: cart-service:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 3003
+          env:
+            - name: SERVICE_NAME
+              value: cart-service
+            - name: NODE_ENV
+              value: production
+            - name: LOG_LEVEL
+              value: info
+            - name: PORT
+              value: "3003"
+            # Direct service name — no cross-namespace ConfigMap needed
+            - name: REDIS_URL
+              value: redis://redis.infra.svc.cluster.local:6379
+            - name: KAFKA_BROKER
+              value: kafka.infra.svc.cluster.local:9092
+            - name: KAFKAJS_NO_PARTITIONER_WARNING
+              value: "1"
+          envFrom:
+            - secretRef:
+                name: cart-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3003
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3003
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cart-service
+  namespace: cart
+spec:
+  clusterIP: None
+  selector:
+    app: cart-service
+  ports:
+    - port: 3003
+      targetPort: 3003
