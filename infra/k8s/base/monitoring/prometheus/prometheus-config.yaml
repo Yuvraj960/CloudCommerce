@@ -1,0 +1,279 @@
+# Prometheus configuration — ConfigMap
+# Contains: scrape configs, alerting rules, recording rules
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+  labels:
+    app: prometheus
+data:
+  prometheus.yml: |
+    # ── Global settings ───────────────────────────────────────────────────────
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      query_log_file: /prometheus/queries.log
+
+    # ── Alerting ──────────────────────────────────────────────────────────────
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: []
+
+    # ── Rule files ────────────────────────────────────────────────────────────
+    rule_files:
+      - /etc/prometheus/rules/*.yaml
+
+    # ── Scrape configs ────────────────────────────────────────────────────────
+    scrape_configs:
+      # Prometheus self-monitoring
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+        metrics_path: /metrics
+
+      # kube-state-metrics (cluster-level object state)
+      - job_name: 'kube-state-metrics'
+        static_configs:
+          - targets: ['kube-state-metrics.monitoring.svc.cluster.local:8080']
+        metrics_path: /metrics
+
+      # node-exporter (per-node CPU, memory, disk, network)
+      - job_name: 'node-exporter'
+        static_configs:
+          - targets: ['node-exporter.monitoring.svc.cluster.local:9100']
+        metrics_path: /metrics
+
+      # ── CloudCommerce Services ─────────────────────────────────────────────
+      - job_name: 'cloudcommerce-services'
+        metrics_path: /metrics
+        scrape_interval: 15s
+        static_configs:
+          - targets:
+              - 'auth-service.auth.svc.cluster.local:3001'
+              - 'product-service.product.svc.cluster.local:3002'
+              - 'cart-service.cart.svc.cluster.local:3003'
+              - 'order-service.order.svc.cluster.local:3004'
+              - 'payment-service.payment.svc.cluster.local:3005'
+              - 'notification-service.notification.svc.cluster.local:3006'
+              - 'frontend.frontend.svc.cluster.local:5173'
+            labels:
+              group: 'cloudcommerce-services'
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: instance
+            regex: '([^:]+):.*'
+            replacement: '${1}'
+
+      # ── Infrastructure ─────────────────────────────────────────────────────
+      - job_name: 'cloudcommerce-infra'
+        metrics_path: /metrics
+        scrape_interval: 30s
+        static_configs:
+          - targets:
+              - 'postgres.infra.svc.cluster.local:5432'
+              - 'mongo.infra.svc.cluster.local:27017'
+              - 'redis.infra.svc.cluster.local:6379'
+            labels:
+              group: 'cloudcommerce-infra'
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: instance
+
+  # ── Alerting rules ──────────────────────────────────────────────────────────
+  # These are loaded via rule_files in prometheus.yml
+  # File naming convention: rules-<alert-group-name>.yaml
+  rules.yaml: |
+    groups:
+      # ── Service Availability ────────────────────────────────────────────────
+      - name: service-availability
+        interval: 30s
+        rules:
+          - alert: ServiceDown
+            expr: up{job=~"cloudcommerce-.*"} == 0
+            for: 1m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Service {{ $labels.instance }} is down"
+              description: "{{ $labels.job }} has been down for more than 1 minute."
+
+          - alert: PodCrashLoopBackOff
+            expr: kube_pod_container_status_restarts_total > 5
+            for: 2m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is in CrashLoopBackOff"
+              description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times in the last 5 minutes."
+
+          - alert: PodPending
+            expr: kube_pod_status_phase{phase="Pending"} == 1
+            for: 1m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is Pending"
+              description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been Pending for more than 1 minute."
+
+      # ── HTTP Error Rates ────────────────────────────────────────────────────
+      - name: http-errors
+        interval: 30s
+        rules:
+          - alert: HighHTTPErrorRate
+            # 5xx errors / total requests > 0.05 over 2 minutes
+            expr: |
+              (
+                sum(rate(http_requests_total{status_code=~"5.."}[2m]))
+                /
+                sum(rate(http_requests_total[2m]))
+              ) > 0.05
+            for: 2m
+            labels:
+              severity: warning
+              team: backend
+            annotations:
+              summary: "High HTTP 5xx error rate on {{ $labels.service }}"
+              description: "Service {{ $labels.service }} has {{ $value | humanizePercentage }} 5xx errors over the last 2 minutes."
+
+          - alert: HighHTTP4xxRate
+            expr: |
+              (
+                sum(rate(http_requests_total{status_code=~"4.."}[2m]))
+                /
+                sum(rate(http_requests_total[2m]))
+              ) > 0.10
+            for: 3m
+            labels:
+              severity: info
+              team: backend
+            annotations:
+              summary: "Elevated HTTP 4xx rate on {{ $labels.service }}"
+              description: "Service {{ $labels.service }} has {{ $value | humanizePercentage }} 4xx errors over the last 3 minutes."
+
+      # ── Latency ─────────────────────────────────────────────────────────────
+      - name: latency
+        interval: 30s
+        rules:
+          - alert: ServiceLatencyP99High
+            # P99 latency > 2s over 3 minutes
+            expr: |
+              histogram_quantile(0.99,
+                rate(http_request_duration_seconds_bucket[3m])
+              ) > 2
+            for: 3m
+            labels:
+              severity: warning
+              team: backend
+            annotations:
+              summary: "High P99 latency on {{ $labels.service }}"
+              description: "Service {{ $labels.service }} P99 latency is {{ $value }}s (threshold: 2s) over the last 3 minutes."
+
+          - alert: ServiceLatencyP95High
+            expr: |
+              histogram_quantile(0.95,
+                rate(http_request_duration_seconds_bucket[3m])
+              ) > 1
+            for: 5m
+            labels:
+              severity: info
+              team: backend
+            annotations:
+              summary: "Elevated P95 latency on {{ $labels.service }}"
+              description: "Service {{ $labels.service }} P95 latency is {{ $value }}s (threshold: 1s) over the last 5 minutes."
+
+      # ── Kafka Consumer Lag ─────────────────────────────────────────────────
+      - name: kafka-consumers
+        interval: 1m
+        rules:
+          - alert: KafkaConsumerGroupLagHigh
+            expr: kafka_consumer_lag_sum > 100
+            for: 5m
+            labels:
+              severity: warning
+              team: backend
+            annotations:
+              summary: "High Kafka consumer lag for {{ $labels.consumer_group }}"
+              description: "Consumer group {{ $labels.consumer_group }} has lag of {{ $value | humanize }} messages for more than 5 minutes."
+
+          - alert: KafkaConsumerGroupOffline
+            expr: kafka_consumer_lag_sum offset 5m == kafka_consumer_lag_sum
+            for: 5m
+            labels:
+              severity: critical
+              team: backend
+            annotations:
+              summary: "Kafka consumer group {{ $labels.consumer_group }} may be offline"
+              description: "Consumer lag has not changed in 5 minutes — consumer may be stuck."
+
+      # ── Resource Utilization ───────────────────────────────────────────────
+      - name: resource-usage
+        interval: 1m
+        rules:
+          - alert: HighMemoryUsage
+            expr: |
+              (
+                container_memory_usage_bytes /
+                container_spec_memory_limit_bytes
+              ) > 0.90
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Container {{ $labels.container }} is using >90% of its memory limit"
+              description: "Container {{ $labels.container }} in {{ $labels.pod }} is at {{ $value | humanizePercentage }} memory."
+
+          - alert: HighCPUUsage
+            expr: |
+              (
+                rate(container_cpu_usage_seconds_total[5m])
+                /
+                container_spec_cpu_quota/container_spec_cpu_period
+              ) > 0.85
+            for: 5m
+            labels:
+              severity: info
+              team: platform
+            annotations:
+              summary: "Container {{ $labels.container }} is using >85% of its CPU quota"
+              description: "Container {{ $labels.container }} in {{ $labels.pod }} is at {{ $value | humanizePercentage }} CPU."
+
+          - alert: HPAAtMaxReplicas
+            expr: kube_hpa_status_current_replicas == kube_hpa_spec_max_replicas
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "HPA {{ $labels.hpa }} is at max replicas"
+              description: "HPA {{ $labels.namespace }}/{{ $labels.hpa }} has reached max replica count ({{ $value }})."
+
+  # ── Recording rules (pre-compute common queries for faster dashboards) ───────
+  recording_rules.yaml: |
+    groups:
+      - name: cloudcommerce_recording_rules
+        interval: 30s
+        rules:
+          # Service availability (all UP)
+          - record: cloudcommerce:service_up:avg
+            expr: avg(up{job=~"cloudcommerce-.*"}) by (service)
+          # Request rate per service
+          - record: cloudcommerce:http_requests_per_second:rate5m
+            expr: sum(rate(http_requests_total[5m])) by (service)
+          # Error rate per service
+          - record: cloudcommerce:http_error_rate:rate5m
+            expr: |
+              sum(rate(http_requests_total{status_code=~"5.."}[5m])) by (service)
+              /
+              sum(rate(http_requests_total[5m])) by (service)
+          # P99 latency
+          - record: cloudcommerce:http_latency_p99:rate5m
+            expr: |
+              histogram_quantile(0.99,
+                sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+              )
