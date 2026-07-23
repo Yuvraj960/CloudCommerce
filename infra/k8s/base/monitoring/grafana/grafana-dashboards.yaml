@@ -1,0 +1,206 @@
+# Grafana dashboards — ConfigMap with embedded JSON
+# 4 dashboards: Platform Overview, Service Detail, Kafka, Cluster Overview
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+  labels:
+    app: grafana
+data:
+  # ── Dashboard 1: Platform Overview (home) ─────────────────────────────────────
+  platform_overview.json: |
+    {
+      "title": "CloudCommerce Platform Overview",
+      "uid": "platform-overview",
+      "header": { "title": "CloudCommerce Platform Overview", "tags": ["cloudcommerce", "overview"], "timezone": "browser" },
+      "panels": [
+        {
+          "id": 1, "title": "Service Health", "type": "stat",
+          "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+          "targets": [{"expr": "avg(up{job=~\"cloudcommerce-.*\"}) by (service)", "legendFormat": "{{service}}"}],
+          "fieldConfig": {"defaults": {"mappings": [{"type": "threshold", "options": {"0": {"color": "red", "text": "DOWN"}}, {"type": "value"}], "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 0.5, "color": "red"}]}]}}
+        },
+        {
+          "id": 2, "title": "Request Rate (req/s)", "type": "graph",
+          "gridPos": {"x": 8, "y": 0, "w": 16, "h": 8},
+          "targets": [{"expr": "sum(rate(http_requests_total[2m])) by (service)", "legendFormat": "{{service}}", "interval": ""}],
+          "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 2, "fillOpacity": 10}}}
+        },
+        {
+          "id": 3, "title": "Error Rate (%)", "type": "graph",
+          "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+          "targets": [{"expr": "100 * sum(rate(http_requests_total{status_code=~\"5..\"}[2m])) by (service) / sum(rate(http_requests_total[2m])) by (service)", "legendFormat": "{{service}}", "interval": ""}],
+          "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 1, "color": "yellow"}, {"value": 5, "color": "red"}]}}}
+        },
+        {
+          "id": 4, "title": "P99 Latency (ms)", "type": "graph",
+          "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+          "targets": [{"expr": "1000 * histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[2m])) by (le, service))", "legendFormat": "{{service}}", "interval": ""}],
+          "fieldConfig": {"defaults": {"unit": "ms", "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 500, "color": "yellow"}, {"value": 2000, "color": "red"}]}}}
+        },
+        {
+          "id": 5, "title": "Kafka Consumer Lag", "type": "graph",
+          "gridPos": {"x": 0, "y": 12, "w": 24, "h": 6},
+          "targets": [{"expr": "kafka_consumer_lag_sum", "legendFormat": "{{consumer_group}}", "interval": ""}],
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2}}}
+        }
+      ],
+      "templating": {"list": []},
+      "refresh": "30s",
+      "schemaVersion": 38
+    }
+
+  # ── Dashboard 2: Service Detail ──────────────────────────────────────────────
+  service_detail.json: |
+    {
+      "title": "CloudCommerce Service Detail",
+      "uid": "service-detail",
+      "panels": [
+        {
+          "id": 1, "title": "Request Rate", "type": "graph",
+          "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+          "targets": [{"expr": "sum(rate(http_requests_total{service=\"$service\"}[5m]))", "legendFormat": "req/s", "interval": ""}],
+          "fieldConfig": {"defaults": {"unit": "reqps"}}
+        },
+        {
+          "id": 2, "title": "Error Rate", "type": "graph",
+          "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+          "targets": [
+            {"expr": "100 * sum(rate(http_requests_total{service=\"$service\",status_code=~\"4..\"}[5m])) / sum(rate(http_requests_total{service=\"$service\"}[5m]))", "legendFormat": "4xx %", "interval": ""},
+            {"expr": "100 * sum(rate(http_requests_total{service=\"$service\",status_code=~\"5..\"}[5m])) / sum(rate(http_requests_total{service=\"$service\"}[5m]))", "legendFormat": "5xx %", "interval": ""}
+          ],
+          "fieldConfig": {"defaults": {"unit": "percent"}}
+        },
+        {
+          "id": 3, "title": "Latency Percentiles", "type": "graph",
+          "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+          "targets": [
+            {"expr": "1000 * histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{service=\"$service\"}[5m])) by (le))", "legendFormat": "P50", "interval": ""},
+            {"expr": "1000 * histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"$service\"}[5m])) by (le))", "legendFormat": "P95", "interval": ""},
+            {"expr": "1000 * histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{service=\"$service\"}[5m])) by (le))", "legendFormat": "P99", "interval": ""}
+          ],
+          "fieldConfig": {"defaults": {"unit": "ms"}}
+        },
+        {
+          "id": 4, "title": "Requests by Status Code", "type": "graph",
+          "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+          "targets": [{"expr": "sum(rate(http_requests_total{service=\"$service\"}[5m])) by (status_code)", "legendFormat": "{{status_code}}", "interval": ""}],
+          "fieldConfig": {"defaults": {"unit": "reqps"}}
+        },
+        {
+          "id": 5, "title": "Kafka Messages Produced", "type": "stat",
+          "gridPos": {"x": 0, "y": 16, "w": 6, "h": 4},
+          "targets": [{"expr": "sum(kafka_messages_produced_total{service=\"$service\"})", "legendFormat": ""}],
+          "fieldConfig": {"defaults": {"unit": "short"}}
+        },
+        {
+          "id": 6, "title": "Kafka Messages Consumed", "type": "stat",
+          "gridPos": {"x": 6, "y": 16, "w": 6, "h": 4},
+          "targets": [{"expr": "sum(kafka_messages_consumed_total{service=\"$service\"})", "legendFormat": ""}],
+          "fieldConfig": {"defaults": {"unit": "short"}}
+        }
+      ],
+      "templating": {
+        "list": [
+          {"name": "service", "type": "query", "query": "label_values(up{job=~\"cloudcommerce-.*\"}, service)", "multi": false}
+        ]
+      },
+      "refresh": "30s",
+      "schemaVersion": 38
+    }
+
+  # ── Dashboard 3: Kafka Consumer Lag ───────────────────────────────────────────
+  kafka_consumers.json: |
+    {
+      "title": "Kafka Consumer Lag",
+      "uid": "kafka-consumers",
+      "panels": [
+        {
+          "id": 1, "title": "Consumer Group Lag", "type": "graph",
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+          "targets": [{"expr": "kafka_consumer_lag_sum", "legendFormat": "{{consumer_group}}", "interval": ""}],
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2}}}
+        },
+        {
+          "id": 2, "title": "Messages Consume Rate", "type": "graph",
+          "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+          "targets": [{"expr": "sum(rate(kafka_messages_consumed_total[2m])) by (consumer_group)", "legendFormat": "{{consumer_group}}", "interval": ""}],
+          "fieldConfig": {"defaults": {"unit": "short"}}
+        },
+        {
+          "id": 3, "title": "Current Lag by Partition", "type": "table",
+          "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+          "targets": [{"expr": "kafka_consumer_lag", "format": "table", "instant": true}]
+        },
+        {
+          "id": 4, "title": "Topic Throughput", "type": "graph",
+          "gridPos": {"x": 0, "y": 16, "w": 12, "h": 6},
+          "targets": [{"expr": "sum(rate(kafka_messages_produced_total[2m])) by (topic)", "legendFormat": "produced: {{topic}}", "interval": ""}],
+          "fieldConfig": {"defaults": {"unit": "short"}}
+        },
+        {
+          "id": 5, "title": "Consumer Throughput", "type": "graph",
+          "gridPos": {"x": 12, "y": 16, "w": 12, "h": 6},
+          "targets": [{"expr": "sum(rate(kafka_messages_consumed_total[2m])) by (topic)", "legendFormat": "consumed: {{topic}}", "interval": ""}],
+          "fieldConfig": {"defaults": {"unit": "short"}}
+        }
+      ],
+      "templating": {"list": []},
+      "refresh": "30s",
+      "schemaVersion": 38
+    }
+
+  # ── Dashboard 4: Kubernetes Cluster Overview ──────────────────────────────
+  cluster_overview.json: |
+    {
+      "title": "Kubernetes Cluster Overview",
+      "uid": "cluster-overview",
+      "panels": [
+        {
+          "id": 1, "title": "Pod Status", "type": "table",
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 6},
+          "targets": [
+            {"expr": "kube_pod_status_phase", "format": "table", "instant": true}
+          ],
+          "fieldConfig": {"defaults": {"mappings": [{"type": "threshold", "options": {"0": {"color": "red", "text": "Pending"}}, {"type": "value"}]}}}
+        },
+        {
+          "id": 2, "title": "Pod Count by State", "type": "piechart",
+          "gridPos": {"x": 0, "y": 6, "w": 8, "h": 8},
+          "targets": [{"expr": "sum(kube_pod_status_phase{phase!=\"Succeeded\"}) by (phase)", "legendFormat": "{{phase}}"}],
+          "fieldConfig": {}
+        },
+        {
+          "id": 3, "title": "CPU Usage vs Requests", "type": "graph",
+          "gridPos": {"x": 8, "y": 6, "w": 16, "h": 8},
+          "targets": [
+            {"expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"\"}[5m])) by (namespace, pod)", "legendFormat": "{{namespace}}/{{pod}} (actual)", "interval": ""}
+          ],
+          "fieldConfig": {"defaults": {"unit": "short"}}
+        },
+        {
+          "id": 4, "title": "Memory Usage vs Requests", "type": "graph",
+          "gridPos": {"x": 0, "y": 14, "w": 24, "h": 8},
+          "targets": [
+            {"expr": "sum(container_memory_usage_bytes) by (namespace, pod) / 1024/1024", "legendFormat": "{{namespace}}/{{pod}}", "interval": ""}
+          ],
+          "fieldConfig": {"defaults": {"unit": "Mi", "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 256, "color": "yellow"}, {"value": 512, "color": "red"}]}}}
+        },
+        {
+          "id": 5, "title": "Deployment Replicas", "type": "stat",
+          "gridPos": {"x": 0, "y": 22, "w": 12, "h": 4},
+          "targets": [{"expr": "kube_deployment_spec_replicas", "legendFormat": "{{namespace}}/{{deployment}}", "interval": ""}],
+          "fieldConfig": {"defaults": {"mappings": []}}
+        },
+        {
+          "id": 6, "title": "PersistentVolume Usage", "type": "gauge",
+          "gridPos": {"x": 12, "y": 22, "w": 12, "h": 4},
+          "targets": [{"expr": "kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes * 100", "legendFormat": "{{persistentvolumeclaim}}"}],
+          "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"mode": "absolute", "steps": [{"value": null, "color": "green"}, {"value": 70, "color": "yellow"}, {"value": 90, "color": "red"}]}}}
+        }
+      ],
+      "templating": {"list": []},
+      "refresh": "30s",
+      "schemaVersion": 38
+    }

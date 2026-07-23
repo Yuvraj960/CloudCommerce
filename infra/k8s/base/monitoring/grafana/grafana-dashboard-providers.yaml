@@ -1,0 +1,35 @@
+# Grafana dashboard provider provisioning — ConfigMap
+# Tells Grafana where to load dashboard JSON files from
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-providers
+  namespace: monitoring
+  labels:
+    app: grafana
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'CloudCommerce Dashboards'
+        orgId: 1
+        folder: 'CloudCommerce'
+        folderUid: 'cloudcommerce'
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards/cloudcommerce
+          foldersFromFilesStructure: true
+      - name: 'Kubernetes Dashboards'
+        orgId: 1
+        folder: 'Kubernetes'
+        folderUid: 'kubernetes'
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 60
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards/kubernetes
+          foldersFromFilesStructure: true
