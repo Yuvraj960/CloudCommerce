@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kafka-connect-test
+  namespace: infra
+spec:
+  restartPolicy: Never
+  containers:
+  - name: kafka
+    image: curlimages/curl:latest
+    command: ['sh', '-c', 'echo DNS kafka: && nslookup kafka.infra.svc.cluster.local && echo Port kafka broker: && nc -z -w3 kafka 9092 && echo SUCCESS || echo FAILED']

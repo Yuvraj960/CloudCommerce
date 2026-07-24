@@ -1,0 +1,85 @@
+# Kafka — KRaft mode (no ZooKeeper)
+# Uses KAFKA_PROCESS_ROLES=broker,controller (internal KRaft quorum).
+# Port 9092 is used for all traffic (clients + inter-broker + controller).
+# KAFKA_ZOOKEEPER_CONNECT=dummy satisfies the confluent entrypoint dub check;
+# it's unset in the shell before Kafka runs so ZooKeeper is never contacted.
+# controller.quorum.voters set via KAFKA_OPTS to ensure it survives the dub lifecycle.
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: infra
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.6.0
+          ports:
+            - containerPort: 9092
+              name: kafka
+            - containerPort: 29093
+              name: controller
+          command: ["bash", "-c", "\
+            unset KAFKA_ZOOKEEPER_CONNECT KAFKA_PORT KAFKA_CLIENT_PORT KAFKA_ZOOKEEPER_CLIENT_PORT KAFKA_CONTROLLER_QUORUM_VOTERS && \
+            export KAFKA_NODE_ID=1 && \
+            export CLUSTER_ID=PsUQhyizSbmLweamXxvmqw== && \
+            export KAFKA_PROCESS_ROLES=broker,controller && \
+            export KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:29093 && \
+            export KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka.infra.svc.cluster.local:9092 && \
+            export KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT && \
+            export KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER && \
+            export KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT && \
+            export KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:29093 && \
+            export KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 && \
+            export KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 && \
+            export KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 && \
+            export KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 && \
+            export KAFKA_LOG_DIRS=/var/lib/kafka/data && \
+            exec /etc/confluent/docker/run"]
+          env:
+            - name: KAFKA_ZOOKEEPER_CONNECT
+              value: "dummy"
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xmx768m"
+          volumeMounts:
+            - name: kafka-storage
+              mountPath: /var/lib/kafka/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          startupProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            failureThreshold: 3
+      volumes:
+        - name: kafka-storage
+          persistentVolumeClaim:
+            claimName: kafka-pvc
