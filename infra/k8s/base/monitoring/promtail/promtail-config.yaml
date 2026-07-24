@@ -1,0 +1,110 @@
+# Promtail configuration — ConfigMap
+# Collects stdout/stderr from all pods via /var/log/pods/
+# Adds service label from pod's app label so logs can be filtered by service
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: monitoring
+  labels:
+    app: promtail
+data:
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+      log_level: info
+
+    client:
+      url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+      tenant_id: cloudcommerce
+      batchwait: 10s
+      batchsize: 1048576  # 1MB
+
+    positions:
+      filename: /run/promtail/positions.yaml
+      ignore_invalid_yaml: true
+
+    target_config:
+      sync_period: 10s
+
+    scrape_configs:
+      # ── Tail all pod log files from /var/log/pods/ ───────────────────────────
+      # Promtail reads the symbolic links in /var/log/pods/ to find the actual log files
+      # Each container's stdout/stderr ends up here as a .log file
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # Extract namespace, pod name, container name from the symlink path
+          # Path: /var/log/pods/<namespace>_<pod>_<uid>/<container>/0.log
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          # Use the app label from the pod as the service name
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: service
+            regex: (.+)
+            replacement: "${1}"
+          # If no app label, use container name as fallback
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: service
+            regex: (.+)
+            replacement: ""
+            action: replace
+          # Add pod UID for uniqueness
+          - source_labels: [__meta_kubernetes_pod_uid]
+            target_label: pod_uid
+          # Set the log file path as the job identifier
+          - source_labels: [__meta_kubernetes_pod_name, __meta_kubernetes_namespace, __meta_kubernetes_pod_container_name]
+            separator: "/"
+            target_label: pod_container
+          # Drop container's init containers
+          - source_labels: [__meta_kubernetes_pod_container_init]
+            regex: "true"
+            action: drop
+          # Map __path__ to the actual log files
+          - action: replace
+            replacement: /var/log/pods/*/  # must end with / for directory mode
+            target_label: __path__
+            separator: ""
+        pipeline_stages:
+          # Parse JSON logs (CloudCommerce services use Winston JSON formatting)
+          - json:
+              expressions:
+                timestamp: timestamp
+                level: level
+                message: message
+                service: service
+                stack: stack
+          - labels:
+              level: level
+              service: level
+          - timestamp:
+              source: timestamp
+              format: "2006-01-02T15:04:05.000Z07:00"
+              location: UTC
+          - output:
+              source: message
+
+      # ── Tail static pod logs for infra namespace ─────────────────────────────
+      # Kafka, PostgreSQL, MongoDB, Redis, LocalStack all land here
+      - job_name: kubernetes Infra-pods
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [infra]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: service
+          - action: replace
+            replacement: /var/log/pods/*/
+            target_label: __path__
+            separator: ""

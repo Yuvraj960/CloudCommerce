@@ -1,0 +1,9 @@
+# Prometheus Monitoring namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/name: monitoring
+    app.kubernetes.io/managed-by: kubectl
+    app.kubernetes.io/part-of: cloudcommerce-platform
