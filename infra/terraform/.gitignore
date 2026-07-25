@@ -1,0 +1,23 @@
+# Terraform local state (no remote backend)
+# State files store sensitive values — never commit them
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Provider lock files — commit these so all users get the same versions
+.terraform.lock.hcl
+
+# .terraform directory — downloaded plugins
+.terraform
+
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local .terraform dirs
+
+.terraform/
+**/.terraform/
