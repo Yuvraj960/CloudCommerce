@@ -1,0 +1,227 @@
+name: Deploy to Kind
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SELF-HOSTED RUNNER REQUIREMENT
+# ──────────────────────────────────────────────────────────────────────────────
+# GitHub Actions cloud-hosted runners CANNOT reach your local Kind cluster
+# (it's behind your router/desktop, not publicly accessible).
+#
+# For auto-deploy on push to main:
+#   1. Register a self-hosted runner on your development machine.
+#      Settings → Actions → Runners → New self-hosted runner (Linux/macOS/Windows)
+#   2. Run the runner: ./run.sh
+#   3. Once registered, this workflow auto-triggers on push to main.
+#
+# Manual deploy (current, no runner needed):
+#   Use "workflow_dispatch" button in the GitHub Actions UI.
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+    # Skip CI-only changes
+    paths-ignore:
+      - "**.md"
+      - "CLAUDE.md"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. sha-abcd123 or latest)"
+        required: false
+        default: "latest"
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner != '' && github.repository_owner || 'cloudcommerce' }}
+
+jobs:
+
+  # ── Pre-flight: detect if Kind kubectl is reachable ────────────────────────
+  check-kind:
+    name: Detect Kind cluster
+    runs-on: ubuntu-latest
+    outputs:
+      kind_reachable: ${{ steps.check.outputs.ok }}
+    steps:
+      - id: check
+        run: |
+          if kubectl version --client > /dev/null 2>&1; then
+            echo "ok=true" >> $GITHUB_OUTPUT
+          else
+            echo "ok=false" >> $GITHUB_OUTPUT
+          fi
+
+  # ── Compute tag (used by all downstream jobs) ───────────────────────────────
+  # Inline computation avoids needing job-output references across matrix boundaries
+  compute-tag:
+    name: Compute image tag
+    runs-on: ubuntu-latest
+    needs: [check-kind]
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+      sha_short: ${{ steps.tag.outputs.sha_short }}
+    steps:
+      - name: Compute tag
+        id: tag
+        run: |
+          # Use manual input if provided, otherwise use full SHA
+          TAG="${{ github.event.inputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.sha }}"
+          fi
+          SHORT=$(echo "$TAG" | cut -c1-7)
+          echo "image_tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "sha_short=${SHORT}" >> $GITHUB_OUTPUT
+
+  # ── Update service manifests with tagged image URLs ─────────────────────────
+  prepare-manifests:
+    name: Prepare K8s manifests
+    runs-on: ubuntu-latest
+    needs: [compute-tag]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stamp image tags into service YAMLs
+        run: |
+          OWNER_LOWER=$(echo "${{ env.OWNER }}" | tr '[:upper:]' '[:lower:]')
+          TAG="${{ needs.compute-tag.outputs.image_tag }}"
+          FULL_TAG="${{ env.REGISTRY }}/${OWNER_LOWER}/cloudcommerce"
+
+          for SVC in auth-service product-service cart-service order-service payment-service notification-service frontend; do
+            YAML="infra/k8s/services/${SVC}.yaml"
+            if [ -f "$YAML" ]; then
+              echo "Updating $SVC → ${FULL_TAG}/${SVC}:${TAG}"
+              sed -i "s|image: ${SVC}:local|image: ${FULL_TAG}/${SVC}:${TAG}|g" "$YAML"
+              sed -i 's|imagePullPolicy: Never|imagePullPolicy: Always|g' "$YAML"
+            fi
+          done
+
+          echo ""
+          echo "=== Updated images ==="
+          grep "image:" infra/k8s/services/*.yaml
+
+      - name: Upload manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8s-manifests-${{ github.run_number }}
+          path: infra/k8s/services/
+          retention-days: 1
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # AUTO-DEPLOY (only runs when self-hosted runner is registered)
+  # ────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Kind
+    needs: [check-kind, compute-tag, prepare-manifests]
+    # Only runs when a self-hosted runner is available (kubectl is present)
+    if: needs.check-kind.outputs.kind_reachable == 'true'
+    runs-on: self-hosted
+    steps:
+      - name: Download updated manifests
+        uses: actions/download-artifact@v4
+        with:
+          name: k8s-manifests-${{ github.run_number }}
+          path: infra/k8s/services/
+
+      - name: Log in to GHCR (so Kind cluster nodes can pull images)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Authenticate Kind nodes to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u "${{ github.actor }}" --password-stdin
+
+      - name: Load images into Kind
+        run: |
+          TAG="${{ needs.compute-tag.outputs.image_tag }}"
+          OWNER_LOWER=$(echo "${{ env.OWNER }}" | tr '[:upper:]' '[:lower:]')
+          for SVC in auth-service product-service cart-service order-service payment-service notification-service frontend; do
+            docker pull ${{ env.REGISTRY }}/${OWNER_LOWER}/cloudcommerce/${SVC}:${TAG} || true
+            kind load docker-image ${{ env.REGISTRY }}/${OWNER_LOWER}/cloudcommerce/${SVC}:${TAG} \
+              --name cloudcommerce 2>/dev/null || true
+          done
+
+      - name: Apply infra base
+        run: kubectl apply -f infra/k8s/base/ || true
+
+      - name: Apply service manifests
+        run: kubectl apply -f infra/k8s/services/
+
+      - name: Wait for Kafka
+        run: kubectl wait -n infra --for=condition=ready pod -l app=kafka --timeout=180s || true
+
+      - name: Wait for all services
+        run: |
+          for NS in auth product cart order payment notification frontend; do
+            kubectl wait -n $NS --for=condition=ready pod --timeout=180s || true
+          done
+
+      - name: Pod status
+        run: |
+          echo "=== All pods ==="
+          kubectl get pods --all-namespaces | grep -E "Running|CrashLoop|ErrImage" || true
+
+      - name: Verify Kafka connectivity
+        run: |
+          echo "=== Kafka broker status ==="
+          kubectl exec -n infra kafka-0 -- kafka-broker-api-versions --bootstrap-server localhost:9092 2>&1 || \
+          kubectl logs -n infra kafka-0 --tail=5
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # INSTRUCTIONS (shown on GitHub-hosted runners since self-hosted not set up)
+  # ────────────────────────────────────────────────────────────────────────────
+  instructions:
+    name: Deploy instructions
+    needs: [compute-tag]
+    # Only show instructions when NOT on a self-hosted runner
+    if: needs.check-kind.outputs.kind_reachable == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: No self-hosted runner
+        run: |
+          TAG="${{ needs.compute-tag.outputs.image_tag }}"
+          OWNER_LOWER=$(echo "${{ env.OWNER }}" | tr '[:upper:]' '[:lower:]')
+          SHA_SHORT=$(echo "$TAG" | cut -c1-7)
+
+          echo "## ⚠️  Auto-deploy blocked — no self-hosted runner"
+          echo ""
+          echo "GitHub Actions cloud runners cannot reach your local Kind cluster."
+          echo "Register a self-hosted runner to enable auto-deploy on push to main."
+          echo ""
+          echo "### Images ready to deploy"
+          echo ""
+          echo "\`SHA tag: $TAG\`"
+          echo ""
+          echo '```'
+          for SVC in auth-service product-service cart-service order-service payment-service notification-service frontend; do
+            echo "${{ env.REGISTRY }}/${OWNER_LOWER}/cloudcommerce/${SVC}:${TAG}"
+          done
+          echo '```'
+          echo ""
+          echo "### Manual deploy on your machine"
+          echo ""
+          echo "Run this on your workstation:"
+          printf '\`\`\`bash\n'
+          printf 'kind get kubeconfig --name cloudcommerce > ~/.kind/kubeconfig\n'
+          printf 'export KUBECONFIG=~/.kind/kubeconfig\n'
+          printf '\n'
+          printf 'for SVC in auth-service product-service cart-service order-service payment-service notification-service frontend; do\n'
+          printf '  docker pull ${{ env.REGISTRY }}/%s/cloudcommerce/${SVC}:%s\n' "$OWNER_LOWER" "$TAG"
+          printf '  kind load docker-image ${{ env.REGISTRY }}/%s/cloudcommerce/${SVC}:%s --name cloudcommerce\n' "$OWNER_LOWER" "$TAG"
+          printf 'done\n'
+          printf '\n'
+          printf 'kubectl apply -f infra/k8s/base/\n'
+          printf 'kubectl apply -f infra/k8s/services/\n'
+          printf '```\n'
+          echo ""
+          echo "### Enable auto-deploy:"
+          echo "1. Go to **Settings → Actions → Runners** in your GitHub repo"
+          echo "2. Add a **self-hosted** runner (Linux/macOS or Windows)"
+          echo "3. On your machine: download the runner and run \`./run.sh\`"
+          echo "4. Once registered, this workflow deploys automatically on push to main"
